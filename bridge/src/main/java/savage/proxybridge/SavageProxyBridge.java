@@ -12,10 +12,6 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import savage.proxybridge.mixin.ServerLoginNetworkHandlerAccessor;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.UUID;
 
 public class SavageProxyBridge implements ModInitializer {
@@ -45,7 +41,7 @@ public class SavageProxyBridge implements ModInitializer {
                 buf.readBytes(data);
 
                 // Verify signature integrity
-                if (!verifySignature(signature, data)) {
+                if (!SecurityManager.verifySignature(signature, data)) {
                     SavageProxyConfig.LOGGER.warn("Invalid proxy signature from connection!");
                     handler.disconnect(Component.literal("Invalid proxy signature."));
                     return;
@@ -83,16 +79,5 @@ public class SavageProxyBridge implements ModInitializer {
                 handler.disconnect(Component.literal("Forwarding error."));
             }
         });
-    }
-
-    private boolean verifySignature(byte[] signature, byte[] data) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new SecretKeySpec(SavageProxyConfig.FORWARDING_SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            return MessageDigest.isEqual(signature, mac.doFinal(data));
-        } catch (Exception e) {
-            SavageProxyConfig.LOGGER.error("HMAC verification error", e);
-            return false;
-        }
     }
 }
