@@ -49,30 +49,16 @@ public class SavageProxyBridge implements ModInitializer {
 
                 // Unpack the verified forwarding data
                 FriendlyByteBuf dataBuf = new FriendlyByteBuf(Unpooled.wrappedBuffer(data));
-                dataBuf.readVarInt(); // version (unused)
-                dataBuf.readUtf();    // remoteAddr (unused)
-                UUID playerUuid = dataBuf.readUUID();
-                String playerName = dataBuf.readUtf();
-
-                // Build the properties map first using raw Guava (ensures mutability during building)
-                LinkedHashMultimap<String, Property> mutableMap = LinkedHashMultimap.create();
-                int propertyCount = dataBuf.readVarInt();
-                for (int i = 0; i < propertyCount; i++) {
-                    String name = dataBuf.readUtf();
-                    String value = dataBuf.readUtf();
-                    String sig = dataBuf.readBoolean() ? dataBuf.readUtf() : null;
-                    mutableMap.put(name, new Property(name, value, sig));
-                }
+                ProfileForwardingData forwardingData = ProfileForwardingData.fromBuf(dataBuf);
+                dataBuf.release();
 
                 // Create the Authlib wrapper and the GameProfile record
-                PropertyMap properties = new PropertyMap(mutableMap);
-                GameProfile profile = new GameProfile(playerUuid, playerName, properties);
-
-                dataBuf.release();
+                PropertyMap properties = new PropertyMap(forwardingData.properties());
+                GameProfile profile = new GameProfile(forwardingData.uuid(), forwardingData.name(), properties);
 
                 // 4. Inject the verified profile into the login handler
                 ((ServerLoginNetworkHandlerAccessor) handler).setAuthenticatedProfile(profile);
-                SavageProxyConfig.LOGGER.info("Proxy forwarding verified: {} ({})", playerName, playerUuid);
+                SavageProxyConfig.LOGGER.info("Proxy forwarding verified: {} ({})", forwardingData.name(), forwardingData.uuid());
 
             } catch (Exception e) {
                 SavageProxyConfig.LOGGER.error("Failed to process proxy forwarding", e);
