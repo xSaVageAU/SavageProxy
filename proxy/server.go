@@ -11,8 +11,9 @@ import (
 )
 
 type Server struct {
-	Addr    string
-	PrivKey *rsa.PrivateKey
+	Addr             string
+	PrivKey          *rsa.PrivateKey
+	ForwardingSecret string
 }
 
 func NewServer(addr string) *Server {
@@ -23,8 +24,9 @@ func NewServer(addr string) *Server {
 	}
 
 	return &Server{
-		Addr:    addr,
-		PrivKey: key,
+		Addr:             addr,
+		PrivKey:          key,
+		ForwardingSecret: "savage_secret_key_2026",
 	}
 }
 
@@ -51,6 +53,7 @@ func (s *Server) Listen() error {
 func (s *Server) handleConnection(baseConn net.Conn) {
 	conn := mcnet.WrapConn(baseConn)
 	session := NewSession(conn, s.PrivKey)
+	session.ForwardingSecret = s.ForwardingSecret
 
 	defer session.Close()
 

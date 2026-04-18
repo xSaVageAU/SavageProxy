@@ -6,11 +6,13 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"encoding/json"
+	"strings"
 
 	"github.com/Tnze/go-mc/net/CFB8"
 	"github.com/Tnze/go-mc/net/packet"
@@ -106,19 +108,9 @@ func (s *Session) HandleLogin() error {
 	log.Printf("[%s] Encryption enabled for %s (UUID: %s)", 
 		s.Conn.Socket.RemoteAddr(), s.Player.Name, s.Player.UUID)
 
-	// 6. Send Login Success (0x02)
-	// In modern versions, this contains UUID, Name, and Property count
-	err = s.Conn.WritePacket(packet.Marshal(0x02,
-		packet.UUID(s.parseUUID(s.Player.UUID)),
-		packet.String(s.Player.Name),
-		packet.VarInt(0), // Properties count
-	))
-	if err != nil {
-		return fmt.Errorf("failed to send login success: %v", err)
-	}
-
-	// 7. Connect to Backend
-	if err := s.ConnectBackend("127.0.0.1:25566"); err != nil {
+	// 6. Connect to Backend - WE DO NOT SEND LOGIN SUCCESS YET!
+	// We wait for the backend to send it, so the proxy remains a true bridge.
+	if err := s.ConnectToBackend("127.0.0.1:25566"); err != nil {
 		return fmt.Errorf("backend connection failed: %v", err)
 	}
 
@@ -170,8 +162,9 @@ func (s *Session) verifyWithMojang(hash string) error {
 	}
 
 	var profile struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID         string     `json:"id"`
+		Name       string     `json:"name"`
+		Properties []Property `json:"properties"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
 		return err
@@ -179,12 +172,18 @@ func (s *Session) verifyWithMojang(hash string) error {
 
 	s.Player.UUID = profile.ID
 	s.Player.Name = profile.Name
+	s.Player.Properties = profile.Properties
 	return nil
 }
 
 func (s *Session) parseUUID(s_uuid string) [16]byte {
-	// Simple UUID parser (Mojang returns UUID without dashes)
+	// Mojang returns UUIDs without dashes (32 chars)
 	var uuid [16]byte
-	fmt.Sscanf(s_uuid, "%32x", &uuid) // Might not be perfect but ok for placeholder
+	data, err := hex.DecodeString(strings.ReplaceAll(s_uuid, "-", ""))
+	if err != nil || len(data) != 16 {
+		log.Printf("Warning: Failed to parse UUID %s: %v", s_uuid, err)
+		return uuid
+	}
+	copy(uuid[:], data)
 	return uuid
 }

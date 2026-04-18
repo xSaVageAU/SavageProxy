@@ -18,14 +18,22 @@ type Session struct {
 	ProtocolVersion int32
 
 	// Backend Data
-	BackendConn *mcnet.Conn
+	BackendConn      *mcnet.Conn
+	ForwardingSecret string
 
 	// Auth Data
 	PrivKey *rsa.PrivateKey
 	Player  struct {
-		Name string
-		UUID string
+		Name       string
+		UUID       string
+		Properties []Property
 	}
+}
+
+type Property struct {
+	Name      string `json:"name"`
+	Value     string `json:"value"`
+	Signature string `json:"signature"`
 }
 
 func NewSession(conn *mcnet.Conn, privKey *rsa.PrivateKey) *Session {
