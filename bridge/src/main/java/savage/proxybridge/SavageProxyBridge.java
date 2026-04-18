@@ -1,18 +1,11 @@
 package savage.proxybridge;
 
-import com.mojang.authlib.GameProfile;
-import com.mojang.authlib.properties.Property;
-import com.mojang.authlib.properties.PropertyMap;
-import com.google.common.collect.LinkedHashMultimap;
 import io.netty.buffer.Unpooled;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.networking.v1.ServerLoginConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerLoginNetworking;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
-import savage.proxybridge.mixin.ServerLoginNetworkHandlerAccessor;
-
-import java.util.UUID;
 
 public class SavageProxyBridge implements ModInitializer {
     @Override
@@ -52,13 +45,8 @@ public class SavageProxyBridge implements ModInitializer {
                 ProfileForwardingData forwardingData = ProfileForwardingData.fromBuf(dataBuf);
                 dataBuf.release();
 
-                // Create the Authlib wrapper and the GameProfile record
-                PropertyMap properties = new PropertyMap(forwardingData.properties());
-                GameProfile profile = new GameProfile(forwardingData.uuid(), forwardingData.name(), properties);
-
-                // 4. Inject the verified profile into the login handler
-                ((ServerLoginNetworkHandlerAccessor) handler).setAuthenticatedProfile(profile);
-                SavageProxyConfig.LOGGER.info("Proxy forwarding verified: {} ({})", forwardingData.name(), forwardingData.uuid());
+                // Inject the verified profile into the login handler
+                IdentityManager.injectIdentity(handler, forwardingData);
 
             } catch (Exception e) {
                 SavageProxyConfig.LOGGER.error("Failed to process proxy forwarding", e);
