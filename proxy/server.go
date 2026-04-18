@@ -26,7 +26,7 @@ func NewServer(addr string) *Server {
 	return &Server{
 		Addr:             addr,
 		PrivKey:          key,
-		ForwardingSecret: "savage_secret_key_2026",
+		ForwardingSecret: "", // Will be set from config in main()
 	}
 }
 

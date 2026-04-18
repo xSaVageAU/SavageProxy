@@ -108,9 +108,8 @@ func (s *Session) HandleLogin() error {
 	log.Printf("[%s] Encryption enabled for %s (UUID: %s)", 
 		s.Conn.Socket.RemoteAddr(), s.Player.Name, s.Player.UUID)
 
-	// 6. Connect to Backend - WE DO NOT SEND LOGIN SUCCESS YET!
-	// We wait for the backend to send it, so the proxy remains a true bridge.
-	if err := s.ConnectToBackend("127.0.0.1:25566"); err != nil {
+	// 6. Connect to Backend using Config
+	if err := s.ConnectToBackend(GlobalConfig.BackendAddr); err != nil {
 		return fmt.Errorf("backend connection failed: %v", err)
 	}
 
