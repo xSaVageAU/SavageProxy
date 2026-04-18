@@ -32,6 +32,7 @@ func (s *Session) Handshake() error {
 	}
 
 	s.State = int32(nextState)
+	s.ProtocolVersion = int32(protocolVersion)
 
 	log.Printf("[%s] Handshake: Version=%d, Host=%s:%d, Next=%d",
 		s.Conn.Socket.RemoteAddr(), protocolVersion, serverAddress, serverPort, nextState)

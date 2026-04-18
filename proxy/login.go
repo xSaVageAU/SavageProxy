@@ -117,6 +117,14 @@ func (s *Session) HandleLogin() error {
 		return fmt.Errorf("failed to send login success: %v", err)
 	}
 
+	// 7. Connect to Backend
+	if err := s.ConnectBackend("127.0.0.1:25566"); err != nil {
+		return fmt.Errorf("backend connection failed: %v", err)
+	}
+
+	// 8. Start Bridging
+	s.Bridge()
+
 	return nil
 }
 

@@ -12,9 +12,13 @@ const (
 )
 
 type Session struct {
-	Conn      *mcnet.Conn
-	CreatedAt time.Time
-	State     int32 // 0: Handshaking, 1: Status, 2: Login
+	Conn            *mcnet.Conn
+	CreatedAt       time.Time
+	State           int32 // 0: Handshaking, 1: Status, 2: Login
+	ProtocolVersion int32
+
+	// Backend Data
+	BackendConn *mcnet.Conn
 
 	// Auth Data
 	PrivKey *rsa.PrivateKey
