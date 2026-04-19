@@ -157,21 +157,18 @@ func (s *Session) Bridge() {
 				return
 			}
 
-			// Dynamic Protocol Explorer: Check if the raw bytes contain the command string
-			// This bypasses any version ID mapping issues in 26.1.1
-			if bytes.Contains(p.Data, []byte("savage")) {
-				log.Printf("[DPE-Intercept] Found 'savage' in Packet 0x%02X! Raw length: %d bytes", p.ID, len(p.Data))
-
-				// Assuming the first field is the string, let's try to extract it
+			// 26.1.1 Strict Command Interceptor (ID: 0x07 is Unsigned Chat Command)
+			if p.ID == 0x07 {
 				var cmd packet.String
-				p.Scan(&cmd)
-				
-				if string(cmd) == "savage" || string(cmd) == "/savage" {
-					// We successfully intercepted and validated it's the exact command!
-					log.Printf("[DPE] Sending custom response dynamically over %s", s.Conn.Socket.RemoteAddr())
-					s.SendMessage("§b§l[SavageProxy] §fNative 26.1.1 Engine §aActive")
-					s.SendMessage("§7This custom response was triggered dynamically!")
-					continue // Swallow the packet
+				if err := p.Scan(&cmd); err == nil {
+					commandName := string(cmd)
+					
+					if commandName == "savage" {
+						log.Printf("[ProxyCommand] Triggered /savage dynamically over %s", s.Conn.Socket.RemoteAddr())
+						s.SendMessage("§b§l[SavageProxy] §fNative 26.1.1 Engine §aActive")
+						s.SendMessage("§7Proxy Command executed beautifully!")
+						continue // Safe to swallow! Unsigned commands (0x07) do NOT affect the chat signature chain!
+					}
 				}
 			}
 
@@ -199,6 +196,7 @@ func (s *Session) Bridge() {
 			// log.Printf("[%s] Potential Chat Packet ID: 0x%02X, Length: %d", s.Conn.Socket.RemoteAddr(), p.ID, len(p.Data))
 		}
 
+		// Clientbound packets are safely relayed.
 		if err := s.WriteClient(p); err != nil {
 			return
 		}

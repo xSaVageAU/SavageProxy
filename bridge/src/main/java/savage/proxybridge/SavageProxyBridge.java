@@ -6,11 +6,24 @@ import net.fabricmc.fabric.api.networking.v1.ServerLoginConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerLoginNetworking;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import static net.minecraft.commands.Commands.literal;
 
 public class SavageProxyBridge implements ModInitializer {
     @Override
     public void onInitialize() {
         SavageProxyConfig.LOGGER.info("Savage Proxy Bridge initialized (26.1.x)");
+
+        // Register dummy commands that the proxy intercepts, so they autocomplete correctly
+        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            dispatcher.register(literal("savage")
+                .executes(context -> {
+                    // Fallback message if proxy fails to intercept
+                    context.getSource().sendSystemMessage(Component.literal("§c[SavageProxy] Interception failed, reached backend."));
+                    return 1;
+                })
+            );
+        });
 
         // Send forwarding challenge when a player begins login
         ServerLoginConnectionEvents.QUERY_START.register((handler, server, sender, synchronizer) -> {
