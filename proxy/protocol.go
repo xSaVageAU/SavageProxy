@@ -5,6 +5,21 @@ import (
 	"io"
 )
 
+// ============================================================
+// 26.1.1 PACKET ID CONSTANTS
+// ============================================================
+// These must match the actual protocol version in use (775).
+const (
+	// Serverbound Play
+	SB_CHAT_COMMAND int32 = 0x07 // Unsigned chat command
+	SB_TAB_COMPLETE int32 = 0x0E // Tab complete / command suggestions request
+
+	// Clientbound Play
+	CB_TAB_COMPLETE     int32 = 0x0F // Tab complete / command suggestions response
+	CB_DECLARE_COMMANDS int32 = 0x10 // Brigadier command graph
+	CB_SYSTEM_CHAT      int32 = 0x79 // System chat message
+)
+
 // This file contains your own native implementation of the Minecraft Protocol.
 // By using these helpers, the proxy can construct and send its own packets
 // without being dependent on external libraries for internal logic.

@@ -6,34 +6,9 @@ import (
 	"io"
 	"log"
 	"net"
-	"strings"
 
 	mcnet "github.com/Tnze/go-mc/net"
 	"github.com/Tnze/go-mc/net/packet"
-)
-
-// ============================================================
-// 26.1.1 PACKET ID CONSTANTS
-// ============================================================
-// These must match the actual protocol version in use.
-// Adjust if connecting to a different MC version.
-//
-// Known verified IDs (confirmed by user testing):
-//   Serverbound 0x07 = chat_command (works for /savage)
-//   Clientbound 0x79 = system_chat  (works for SendMessage)
-//
-// Derived IDs (MUST BE VERIFIED — may need adjustment):
-//   If new packets were added relative to 1.21.11 in the
-//   clientbound direction, all IDs after the insertion point shift.
-const (
-	// Serverbound Play
-	SB_CHAT_COMMAND    int32 = 0x07 // Unsigned chat command
-	SB_TAB_COMPLETE    int32 = 0x0E // Tab complete / command suggestions request
-
-	// Clientbound Play
-	CB_TAB_COMPLETE        int32 = 0x0F // Tab complete / command suggestions response
-	CB_DECLARE_COMMANDS    int32 = 0x10 // Brigadier command graph
-	CB_SYSTEM_CHAT         int32 = 0x79 // System chat message
 )
 
 func (s *Session) ConnectToBackend(address string) error {
@@ -317,18 +292,3 @@ func probeDeclareCommands(data []byte) bool {
 	return bytesPerNode >= 3 && bytesPerNode <= 200
 }
 
-// HandleProxyCommand executes a proxy-owned command.
-func (s *Session) HandleProxyCommand(commandText string) {
-	parts := strings.Fields(commandText)
-	if len(parts) == 0 {
-		return
-	}
-
-	switch parts[0] {
-	case "savage":
-		s.SendMessage("§b§l[SavageProxy] §fNative 26.1.1 Engine §aActive")
-		s.SendMessage("§7Proxy Command executed beautifully!")
-	default:
-		s.SendMessage("§c§l[SavageProxy] §fUnknown proxy command: /" + parts[0])
-	}
-}

@@ -21,19 +21,6 @@ var ProxyCommands = []ProxyCommand{
 	{Name: "savage"},
 }
 
-// IsProxyCommand checks if a command string (without the leading slash) is a proxy command.
-func IsProxyCommand(cmd string) bool {
-	parts := strings.Fields(cmd)
-	if len(parts) == 0 {
-		return false
-	}
-	for _, pc := range ProxyCommands {
-		if parts[0] == pc.Name {
-			return true
-		}
-	}
-	return false
-}
 
 // ============================================================
 // RAW BYTE-LEVEL BRIGADIER GRAPH INJECTION
