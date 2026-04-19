@@ -18,7 +18,8 @@ import (
 	"github.com/Tnze/go-mc/net/packet"
 )
 
-// HandleLogin implements the Mojang Auth & Encryption handshake
+// HandleLogin implements the Mojang Auth & Encryption handshake.
+// It returns nil on success, allowing the runner to transition to Bridge mode.
 func (s *Session) HandleLogin() error {
 	// 1. Receive Login Start (0x00)
 	var p packet.Packet
@@ -33,7 +34,6 @@ func (s *Session) HandleLogin() error {
 		clientName packet.String
 		clientUUID packet.UUID
 	)
-	// In 1.20.2+, LoginStart contains both Name and UUID
 	if err := p.Scan(&clientName, &clientUUID); err != nil {
 		return fmt.Errorf("failed to scan login start: %v", err)
 	}
@@ -48,10 +48,10 @@ func (s *Session) HandleLogin() error {
 	pubKeyDER, _ := x509.MarshalPKIXPublicKey(&s.PrivKey.PublicKey)
 	
 	err := s.Conn.WritePacket(packet.Marshal(0x01,
-		packet.String(""), // Server ID (usually empty)
+		packet.String(""), // Server ID
 		packet.ByteArray(pubKeyDER),
 		packet.ByteArray(verifyToken),
-		packet.Boolean(true), // ShouldAuthenticate (Required since 1.20.5+)
+		packet.Boolean(true), // ShouldAuthenticate
 	))
 	if err != nil {
 		return fmt.Errorf("failed to send encryption request: %v", err)
@@ -73,22 +73,19 @@ func (s *Session) HandleLogin() error {
 		return fmt.Errorf("failed to scan encryption response: %v", err)
 	}
 
-	// Decrypt the verify token and check it
 	verifyTokenDec, err := rsa.DecryptPKCS1v15(rand.Reader, s.PrivKey, verifyTokenEnc)
 	if err != nil || string(verifyTokenDec) != string(verifyToken) {
 		return errors.New("verify token mismatch")
 	}
 
-	// Decrypt the shared secret
 	sharedSecret, err := rsa.DecryptPKCS1v15(rand.Reader, s.PrivKey, sharedSecretEnc)
 	if err != nil {
 		return fmt.Errorf("failed to decrypt shared secret: %v", err)
 	}
 
 	// 4. Verify Session with Mojang
-	// We need the "Server Hash" = SHA1(ServerID + SharedSecret + PublicKey)
 	hash := sha1.New()
-	hash.Write([]byte("")) // Server ID
+	hash.Write([]byte(""))
 	hash.Write(sharedSecret)
 	hash.Write(pubKeyDER)
 	serverHash := MinecraftHash(hash.Sum(nil))
@@ -102,19 +99,10 @@ func (s *Session) HandleLogin() error {
 	if err != nil {
 		return err
 	}
-	// Initial Vector (IV) for CFB8 is the shared secret itself
 	s.Conn.SetCipher(CFB8.NewCFB8Encrypt(block, sharedSecret), CFB8.NewCFB8Decrypt(block, sharedSecret))
 
 	log.Printf("[%s] Encryption enabled for %s (UUID: %s)", 
 		s.Conn.Socket.RemoteAddr(), s.Player.Name, s.Player.UUID)
-
-	// 6. Connect to Backend using Config
-	if err := s.ConnectToBackend(GlobalConfig.BackendAddr); err != nil {
-		return fmt.Errorf("backend connection failed: %v", err)
-	}
-
-	// 8. Start Bridging
-	s.Bridge()
 
 	return nil
 }
@@ -124,7 +112,6 @@ func MinecraftHash(data []byte) string {
 	var negative bool
 	if data[0] >= 0x80 {
 		negative = true
-		// Two's complement: flip bits and add 1
 		carry := true
 		for i := len(data) - 1; i >= 0; i-- {
 			data[i] = ^data[i]
@@ -135,8 +122,7 @@ func MinecraftHash(data []byte) string {
 		}
 	}
 	res := fmt.Sprintf("%x", data)
-	res = fmt.Sprintf("%040s", res) // Pad with zeros if needed (though %x usually doesn't)
-	// Trim leading zeros like Mojang does
+	res = fmt.Sprintf("%040s", res)
 	for len(res) > 0 && res[0] == '0' {
 		res = res[1:]
 	}
@@ -175,8 +161,8 @@ func (s *Session) verifyWithMojang(hash string) error {
 	return nil
 }
 
-func (s *Session) parseUUID(s_uuid string) [16]byte {
-	// Mojang returns UUIDs without dashes (32 chars)
+// ParseUUID converts a Mojang-style UUID string (with or without dashes) into bytes.
+func (s *Session) ParseUUID(s_uuid string) [16]byte {
 	var uuid [16]byte
 	data, err := hex.DecodeString(strings.ReplaceAll(s_uuid, "-", ""))
 	if err != nil || len(data) != 16 {

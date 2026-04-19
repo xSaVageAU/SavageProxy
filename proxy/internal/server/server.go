@@ -1,4 +1,4 @@
-package proxy
+package server
 
 import (
 	"crypto/rand"
@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+
+	"savage-proxy/internal/config"
+	"savage-proxy/internal/proxy"
+	"savage-proxy/internal/relay"
 
 	mcnet "github.com/Tnze/go-mc/net"
 )
@@ -17,7 +21,6 @@ type Server struct {
 }
 
 func NewServer(addr string) *Server {
-	// Generate a 1024-bit RSA key for the encryption handshake
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		log.Fatalf("Failed to generate RSA key: %v", err)
@@ -26,7 +29,7 @@ func NewServer(addr string) *Server {
 	return &Server{
 		Addr:             addr,
 		PrivKey:          key,
-		ForwardingSecret: "", // Will be set from config in main()
+		ForwardingSecret: "",
 	}
 }
 
@@ -52,7 +55,7 @@ func (s *Server) Listen() error {
 
 func (s *Server) handleConnection(baseConn net.Conn) {
 	conn := mcnet.WrapConn(baseConn)
-	session := NewSession(conn, s.PrivKey)
+	session := proxy.NewSession(conn, s.PrivKey)
 	session.ForwardingSecret = s.ForwardingSecret
 
 	defer session.Close()
@@ -70,7 +73,14 @@ func (s *Server) handleConnection(baseConn net.Conn) {
 			log.Printf("[%s] Status error: %v", baseConn.RemoteAddr(), err)
 		}
 	case 2: // Login
-		if err := session.HandleLogin(); err != nil {
+		if err := session.HandleLogin(); err == nil {
+			// Login success! Transition to Backend Relay
+			if err := relay.ConnectToBackend(session, config.GlobalConfig.BackendAddr); err != nil {
+				log.Printf("[%s] Backend connection failed: %v", baseConn.RemoteAddr(), err)
+				return
+			}
+			relay.StartBridge(session)
+		} else {
 			log.Printf("[%s] Login error: %v", baseConn.RemoteAddr(), err)
 		}
 	default:

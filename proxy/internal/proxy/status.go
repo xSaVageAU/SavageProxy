@@ -71,7 +71,7 @@ func (s *Session) buildStatusJSON() (string, error) {
 			Protocol int    `json:"protocol"`
 		}{
 			Name:     "Savage Proxy 26.1",
-			Protocol: 780, // Target version determined in research
+			Protocol: 775, // Target version determined in research
 		},
 		Players: struct {
 			Max    int `json:"max"`

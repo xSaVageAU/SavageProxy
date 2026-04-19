@@ -1,4 +1,4 @@
-package proxy
+package intercept
 
 // ProxyCommand defines a command owned by the proxy.
 type ProxyCommand struct {

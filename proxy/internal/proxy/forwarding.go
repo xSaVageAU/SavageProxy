@@ -24,7 +24,7 @@ func (s *Session) CreateForwardingData() ([]byte, error) {
 	}
 
 	// 3. Player UUID
-	pUUID := s.parseUUID(s.Player.UUID)
+	pUUID := s.ParseUUID(s.Player.UUID)
 	if _, err := buf.Write(pUUID[:]); err != nil {
 		return nil, err
 	}

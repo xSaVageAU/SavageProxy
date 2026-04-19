@@ -1,4 +1,4 @@
-package proxy
+package relay
 
 import (
 	"bytes"
@@ -7,11 +7,16 @@ import (
 	"log"
 	"net"
 
+	"savage-proxy/internal/intercept"
+	"savage-proxy/internal/protocol"
+	"savage-proxy/internal/proxy"
+
 	mcnet "github.com/Tnze/go-mc/net"
 	"github.com/Tnze/go-mc/net/packet"
 )
 
-func (s *Session) ConnectToBackend(address string) error {
+// ConnectToBackend establishes a connection to the destination Minecraft server.
+func ConnectToBackend(s *proxy.Session, address string) error {
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		return fmt.Errorf("failed to dial backend: %v", err)
@@ -33,7 +38,7 @@ func (s *Session) ConnectToBackend(address string) error {
 	// 2. Login Start
 	err = s.BackendConn.WritePacket(packet.Marshal(0x00,
 		packet.String(s.Player.Name),
-		packet.UUID(s.parseUUID(s.Player.UUID)),
+		packet.UUID(s.ParseUUID(s.Player.UUID)),
 	))
 	if err != nil {
 		return fmt.Errorf("failed to send backend login start: %v", err)
@@ -76,7 +81,7 @@ func (s *Session) ConnectToBackend(address string) error {
 			if err := s.BackendConn.WritePacket(ack); err != nil {
 				return fmt.Errorf("failed to relay login ack to backend: %v", err)
 			}
-			
+
 			log.Printf("[%s] Handshake complete! Entering Bridge mode.", s.Conn.Socket.RemoteAddr())
 			return nil
 
@@ -85,18 +90,13 @@ func (s *Session) ConnectToBackend(address string) error {
 			if err := p.Scan(&threshold); err != nil {
 				return fmt.Errorf("invalid compression threshold from backend")
 			}
-			
-			// SYNC BACKEND FIRST
+
 			s.BackendConn.SetThreshold(int(threshold))
-			
 			log.Printf("[%s] Relaying compression threshold: %d (Enabling after send)", s.Conn.Socket.RemoteAddr(), threshold)
-			
-			// RELAY UNCOMPRESSED TO CLIENT (Crucial!)
+
 			if err := s.Conn.WritePacket(p); err != nil {
 				return err
 			}
-
-			// NOW ENABLE FOR CLIENT
 			s.Conn.SetThreshold(int(threshold))
 
 		case 0x04: // Login Plugin Request
@@ -104,7 +104,6 @@ func (s *Session) ConnectToBackend(address string) error {
 				messageID packet.VarInt
 				channel   packet.Identifier
 			)
-			// Manual scan because tail of packet is data
 			reader := bytes.NewReader(p.Data)
 			if _, err := messageID.ReadFrom(reader); err != nil {
 				return err
@@ -128,7 +127,6 @@ func (s *Session) ConnectToBackend(address string) error {
 					return fmt.Errorf("failed to send forwarding response: %v", err)
 				}
 			} else {
-				// Relay unknown plugin request to client
 				if err := s.Conn.WritePacket(p); err != nil {
 					return err
 				}
@@ -143,7 +141,8 @@ func (s *Session) ConnectToBackend(address string) error {
 	}
 }
 
-func (s *Session) Bridge() {
+// StartBridge starts the bidirectional packet relay between the client and the backend server.
+func StartBridge(s *proxy.Session) {
 	// 1. Client to Backend (Packet Interception)
 	go func() {
 		defer s.Close()
@@ -156,38 +155,32 @@ func (s *Session) Bridge() {
 				return
 			}
 
-			// ==================================================
-			// SERVERBOUND PACKET INTERCEPTION
-			// ==================================================
-
-			// Intercept chat commands (both unsigned 0x07 patterns)
-			if p.ID == SB_CHAT_COMMAND {
+			// Intercept chat commands
+			if p.ID == protocol.SB_CHAT_COMMAND {
 				var cmd packet.String
 				if err := p.Scan(&cmd); err == nil {
 					commandText := string(cmd)
-					
-					if IsProxyCommand(commandText) {
+					if intercept.IsProxyCommand(commandText) {
 						log.Printf("[ProxyCommand] Intercepted /%s from %s", commandText, s.Conn.Socket.RemoteAddr())
-						s.HandleProxyCommand(commandText)
-						continue // Swallow — don't forward to backend
+						intercept.HandleProxyCommand(s, commandText)
+						continue
 					}
 				}
 			}
 
 			// Track and potentially intercept tab-complete requests
-			if p.ID == SB_TAB_COMPLETE {
+			if p.ID == protocol.SB_TAB_COMPLETE {
 				var id packet.VarInt
 				var text packet.String
 				if err := p.Scan(&id, &text); err == nil {
 					s.LastTabRequestID = int(id)
 					s.LastTabRequestText = string(text)
 
-					// If the user is typing a proxy command, respond immediately
-					resp := HandleProxyTabCompletion(int(id), string(text), CB_TAB_COMPLETE)
+					resp := intercept.HandleProxyTabCompletion(int(id), string(text), protocol.CB_TAB_COMPLETE)
 					if resp != nil {
 						log.Printf("[ProxyTab] Responding to tab request for '%s' from proxy", text)
 						s.WriteClient(*resp)
-						continue // Don't forward to backend
+						continue
 					}
 				}
 			}
@@ -200,7 +193,7 @@ func (s *Session) Bridge() {
 
 	// 2. Backend to Client (Relay with interception)
 	defer s.Close()
-	declareCmdInjectAttempted := false // Track if we've tried injecting commands
+	declareCmdInjectAttempted := false
 	for {
 		var p packet.Packet
 		if err := s.BackendConn.ReadPacket(&p); err != nil {
@@ -210,85 +203,25 @@ func (s *Session) Bridge() {
 			return
 		}
 
-		// ==================================================
-		// CLIENTBOUND PACKET INTERCEPTION (steady-state)
-		// ==================================================
-
-		// Inject proxy commands into Brigadier graph (runs once per session)
-		if !declareCmdInjectAttempted && p.ID == CB_DECLARE_COMMANDS {
+		// Inject proxy commands into Brigadier graph
+		if !declareCmdInjectAttempted && p.ID == protocol.CB_DECLARE_COMMANDS {
 			log.Printf("[%s] Intercepted declare_commands (0x%02X). Injecting proxy commands...", s.Conn.Socket.RemoteAddr(), p.ID)
 			declareCmdInjectAttempted = true
-			if err := InjectProxyCommands(&p); err != nil {
+			if err := intercept.InjectProxyCommands(&p); err != nil {
 				log.Printf("[%s] Brigadier injection FAILED: %v", s.Conn.Socket.RemoteAddr(), err)
 			}
 		}
 
-		// ==================================================
-		// CLIENTBOUND PACKET INTERCEPTION (steady-state)
-		// ==================================================
-
-		// Intercept tab_complete response — merge proxy suggestions
-		if p.ID == CB_TAB_COMPLETE {
+		// Intercept tab_complete response
+		if p.ID == protocol.CB_TAB_COMPLETE {
 			reqText := s.LastTabRequestText
 			if len(reqText) > 0 {
-				MergeProxySuggestions(&p, reqText)
+				intercept.MergeProxySuggestions(&p, reqText)
 			}
 		}
 
-		// Clientbound packets are safely relayed.
 		if err := s.WriteClient(p); err != nil {
 			return
 		}
 	}
 }
-
-// probeDeclareCommands checks if a packet looks like a declare_commands packet
-// by examining its structure without fully parsing it.
-func probeDeclareCommands(data []byte) bool {
-	if len(data) < 10 {
-		return false
-	}
-
-	r := bytes.NewReader(data)
-
-	// Read the first VarInt — should be a reasonable node count
-	var count packet.VarInt
-	if _, err := count.ReadFrom(r); err != nil {
-		return false
-	}
-
-	// Sanity check: a real Brigadier graph has 50-10000 nodes
-	if count < 30 || count > 10000 {
-		return false
-	}
-
-	// Read the first node's flags byte
-	flags, err := r.ReadByte()
-	if err != nil {
-		return false
-	}
-
-	nodeType := flags & 0x03
-
-	// The first node should typically be the root (type 0) OR
-	// the root could be at any index, but most servers put it first.
-	// However, root type = 0 is the most reliable indicator when combined
-	// with a large node count.
-	// Root nodes have many children and no name.
-	if nodeType == 0 {
-		// Extra validation: root should have a decent number of children
-		var childCount packet.VarInt
-		if _, err := childCount.ReadFrom(r); err != nil {
-			return false
-		}
-		// Root typically has 20+ children (commands like /tp, /give, etc.)
-		return childCount >= 5
-	}
-
-	// If the first node isn't root, it could still be declare_commands
-	// (root is at the end). Check if the overall structure is reasonable.
-	// The data size should be proportional to the node count.
-	bytesPerNode := float64(len(data)) / float64(count)
-	return bytesPerNode >= 3 && bytesPerNode <= 200
-}
-
