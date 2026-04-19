@@ -157,16 +157,21 @@ func (s *Session) Bridge() {
 				return
 			}
 
-			// Intercept Chat Command (0x06: Chat Command, 0x07: Signed Chat Command in 26.1+)
-			if p.ID == 0x06 || p.ID == 0x07 {
+			// Dynamic Protocol Explorer: Check if the raw bytes contain the command string
+			// This bypasses any version ID mapping issues in 26.1.1
+			if bytes.Contains(p.Data, []byte("savage")) {
+				log.Printf("[DPE-Intercept] Found 'savage' in Packet 0x%02X! Raw length: %d bytes", p.ID, len(p.Data))
+
+				// Assuming the first field is the string, let's try to extract it
 				var cmd packet.String
-				if err := p.Scan(&cmd); err == nil {
-					commandName := string(cmd)
-					if commandName == "savage" {
-						s.SendMessage("§b§l[SavageProxy] §fNative Protocol Engine §aActive")
-						s.SendMessage("§7This message was intercepted locally - ownership achieved.")
-						continue 
-					}
+				p.Scan(&cmd)
+				
+				if string(cmd) == "savage" || string(cmd) == "/savage" {
+					// We successfully intercepted and validated it's the exact command!
+					log.Printf("[DPE] Sending custom response dynamically over %s", s.Conn.Socket.RemoteAddr())
+					s.SendMessage("§b§l[SavageProxy] §fNative 26.1.1 Engine §aActive")
+					s.SendMessage("§7This custom response was triggered dynamically!")
+					continue // Swallow the packet
 				}
 			}
 
@@ -186,7 +191,15 @@ func (s *Session) Bridge() {
 			}
 			return
 		}
-		if err := s.Conn.WritePacket(p); err != nil {
+
+		// Log IDs to find the real System Chat ID
+		// Most chat packets are IDs between 0x60 and 0x80 in modern 1.21
+		if p.ID >= 0x60 && p.ID <= 0x80 {
+			// Uncomment for deep debugging:
+			// log.Printf("[%s] Potential Chat Packet ID: 0x%02X, Length: %d", s.Conn.Socket.RemoteAddr(), p.ID, len(p.Data))
+		}
+
+		if err := s.WriteClient(p); err != nil {
 			return
 		}
 	}
