@@ -46,5 +46,8 @@ func NewSession(conn *mcnet.Conn, privKey *rsa.PrivateKey) *Session {
 }
 
 func (s *Session) Close() error {
+	if s.BackendConn != nil {
+		s.BackendConn.Close()
+	}
 	return s.Conn.Close()
 }
