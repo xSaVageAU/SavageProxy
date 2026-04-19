@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"strings"
 
 	"savage-proxy/internal/intercept"
 	"savage-proxy/internal/protocol"
@@ -13,7 +14,7 @@ import (
 	"github.com/Tnze/go-mc/net/packet"
 )
 
-// ConnectToBackend establishes a connection and completes the handshake with a backend server.
+// ConnectToBackend establishes the initial connection for a player joining the proxy.
 func ConnectToBackend(s *proxy.Session, address string) error {
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
@@ -40,7 +41,6 @@ func ConnectToBackend(s *proxy.Session, address string) error {
 		return err
 	}
 
-	// 3. Login Phase Loop
 	for {
 		var p packet.Packet
 		if err := backend.ReadPacket(&p); err != nil {
@@ -59,8 +59,6 @@ func ConnectToBackend(s *proxy.Session, address string) error {
 			if err := backend.WritePacket(ack); err != nil {
 				return err
 			}
-			
-			// We are now in state where we move to configuration/play
 			s.SetBackend(backend)
 			return nil
 
@@ -100,9 +98,74 @@ func ConnectToBackend(s *proxy.Session, address string) error {
 	}
 }
 
-// StartBridge starts the bidirectional packet relay between the client and the backend.
+const (
+	StateHandshaking = 0
+	StateLogin       = 1
+	StateConfig      = 2
+	StatePlay        = 3
+)
+
+// SilentHandshake connects to a target server in the background and navigates to the Play state.
+func SilentHandshake(s *proxy.Session, address string) (*mcnet.Conn, int32, error) {
+	conn, err := net.Dial("tcp", address)
+	if err != nil {
+		return nil, 0, err
+	}
+	backend := mcnet.WrapConn(conn)
+	currentState := StateLogin
+
+	// 1. Handshake
+	backend.WritePacket(packet.Marshal(0x00,
+		packet.VarInt(s.ProtocolVersion),
+		packet.String(address),
+		packet.UnsignedShort(25565),
+		packet.VarInt(2),
+	))
+
+	// 2. Login Start
+	backend.WritePacket(packet.Marshal(0x00,
+		packet.String(s.Player.Name),
+		packet.UUID(s.ParseUUID(s.Player.UUID)),
+	))
+
+	for {
+		var p packet.Packet
+		if err := backend.ReadPacket(&p); err != nil {
+			return nil, 0, fmt.Errorf("read error [State %d]: %v", currentState, err)
+		}
+
+		if currentState == StateLogin {
+			switch p.ID {
+			case 0x02: // Login Success
+				backend.WritePacket(packet.Marshal(0x03)) // Ack Login
+				
+				// Server is now in Configuration Phase natively!
+				// Return the connection so we can natively proxy the Config Phase!
+				return backend, 0, nil
+			case 0x03: // Set Compression
+				var threshold packet.VarInt
+				p.Scan(&threshold)
+				backend.SetThreshold(int(threshold))
+			case 0x04: // Login Plugin Request
+				var (
+					messageID packet.VarInt
+					channel   packet.Identifier
+				)
+				reader := bytes.NewReader(p.Data)
+				messageID.ReadFrom(reader)
+				channel.ReadFrom(reader)
+				if string(channel) == "proxy:player_info" {
+					response, _ := s.CreateForwardingData()
+					backend.WritePacket(packet.Marshal(0x02, messageID, packet.Boolean(true), packet.PluginMessageData(response)))
+				}
+			}
+			continue
+		}
+	}
+}
+
+// StartBridge starts the bidirectional packet relay.
 func StartBridge(s *proxy.Session) {
-	// 1. Client to Backend
 	go func() {
 		defer s.Close()
 		for {
@@ -111,36 +174,38 @@ func StartBridge(s *proxy.Session) {
 				return
 			}
 			
-			// Handle Command Interception
-			if p.ID == protocol.SB_CHAT_COMMAND {
-				var cmd packet.String
-				p.Scan(&cmd)
-				if intercept.IsProxyCommand(string(cmd)) {
-					intercept.HandleProxyCommand(s, string(cmd))
+			// If we are transitioning between servers via the Configuration phase
+			if s.ConfigPhaseClientSide {
+				if p.ID == 0x10 { // Client Acknowledged Configuration (response to our 0x76)
+					// Drop it because the new backend server never sent 0x76, it entered Config natively.
+					s.ConfigPhaseClientSide = false
 					continue
 				}
 			}
-			
-			if p.ID == protocol.SB_TAB_COMPLETE {
-				var id packet.VarInt
-				var text packet.String
-				if err := p.Scan(&id, &text); err == nil {
-					s.LastTabRequestText = string(text)
+
+			if p.ID == protocol.SB_CHAT_COMMAND {
+				var cmd packet.String
+				p.Scan(&cmd)
+				cmdText := string(cmd)
+				if strings.HasPrefix(cmdText, "savage switch ") {
+					target := strings.TrimPrefix(cmdText, "savage switch ")
+					go HandleSwitchCommand(s, target)
+					continue
+				}
+				if intercept.IsProxyCommand(cmdText) {
+					intercept.HandleProxyCommand(s, cmdText)
+					continue
 				}
 			}
-
-			// Safe access to the backend connection
 			if backend := s.GetBackend(); backend != nil {
 				backend.WritePacket(p)
 			}
 		}
 	}()
 
-	// 2. Backend to Client
 	defer s.Close()
 	declareCmdInjectAttempted := false
 	for {
-		// Safe access to the backend connection
 		backend := s.GetBackend()
 		if backend == nil {
 			return
@@ -148,6 +213,9 @@ func StartBridge(s *proxy.Session) {
 
 		var p packet.Packet
 		if err := backend.ReadPacket(&p); err != nil {
+			if s.GetBackend() != backend {
+				continue
+			}
 			return
 		}
 
@@ -161,5 +229,29 @@ func StartBridge(s *proxy.Session) {
 		}
 
 		s.WriteClient(p)
+	}
+}
+
+func HandleSwitchCommand(s *proxy.Session, target string) {
+	s.SendMessage("§b[Proxy] Pre-flight connection to §f" + target + "§b...")
+	newConn, _, err := SilentHandshake(s, target)
+	if err != nil {
+		s.SendMessage("§c[Proxy] Pre-flight failed: §f" + err.Error())
+		return
+	}
+	s.SendMessage("§a[Proxy] Background server ready! Entering Config phase...")
+	
+	// Set the flag to intercept the single 0x0C Ack packet
+	s.ConfigPhaseClientSide = true
+	
+	// Send Start Configuration to the client (kicks client into Config state)
+	// Protocol 775 (1.21.1/26.1.1) Start Configuration is 0x76 (0x69 + 13 shift)
+	s.WriteClient(packet.Marshal(0x76))
+	
+	// Swap backends immediately. Old play packets stop. New config packets start flowing.
+	oldBackend := s.GetBackend()
+	s.SetBackend(newConn)
+	if oldBackend != nil {
+		oldBackend.Close()
 	}
 }

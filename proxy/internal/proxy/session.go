@@ -40,6 +40,10 @@ type Session struct {
 	// Internal
 	closeOnce   sync.Once
 	
+	// Config Switch Transition
+	ConfigPhaseClientSide bool
+	PendingBackend        *mcnet.Conn
+
 	LastTabRequestID   int
 	LastTabRequestText string
 }
