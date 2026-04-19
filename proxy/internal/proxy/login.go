@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strings"
 
+	"savage-proxy/internal/protocol"
+
 	"github.com/Tnze/go-mc/net/CFB8"
 	"github.com/Tnze/go-mc/net/packet"
 )
@@ -88,7 +90,7 @@ func (s *Session) HandleLogin() error {
 	hash.Write([]byte(""))
 	hash.Write(sharedSecret)
 	hash.Write(pubKeyDER)
-	serverHash := MinecraftHash(hash.Sum(nil))
+	serverHash := protocol.MinecraftHash(hash.Sum(nil))
 
 	if err := s.verifyWithMojang(serverHash); err != nil {
 		return fmt.Errorf("mojang verification failed: %v", err)
@@ -105,31 +107,6 @@ func (s *Session) HandleLogin() error {
 		s.Conn.Socket.RemoteAddr(), s.Player.Name, s.Player.UUID)
 
 	return nil
-}
-
-// MinecraftHash implements Mojang's "Two's Complement" SHA-1 hex format
-func MinecraftHash(data []byte) string {
-	var negative bool
-	if data[0] >= 0x80 {
-		negative = true
-		carry := true
-		for i := len(data) - 1; i >= 0; i-- {
-			data[i] = ^data[i]
-			if carry {
-				data[i]++
-				carry = (data[i] == 0)
-			}
-		}
-	}
-	res := fmt.Sprintf("%x", data)
-	res = fmt.Sprintf("%040s", res)
-	for len(res) > 0 && res[0] == '0' {
-		res = res[1:]
-	}
-	if negative {
-		res = "-" + res
-	}
-	return res
 }
 
 func (s *Session) verifyWithMojang(hash string) error {
