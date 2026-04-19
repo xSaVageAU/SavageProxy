@@ -74,7 +74,6 @@ func (s *Server) handleConnection(baseConn net.Conn) {
 		}
 	case 2: // Login
 		if err := session.HandleLogin(); err == nil {
-			// Login success! Transition to Backend Relay
 			if err := relay.ConnectToBackend(session, config.GlobalConfig.BackendAddr); err != nil {
 				log.Printf("[%s] Backend connection failed: %v", baseConn.RemoteAddr(), err)
 				return
