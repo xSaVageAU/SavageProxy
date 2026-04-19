@@ -35,6 +35,9 @@ type Session struct {
 
 	// Internal
 	WriteMutex sync.Mutex
+
+	LastTabRequestID   int
+	LastTabRequestText string
 }
 
 type Property struct {

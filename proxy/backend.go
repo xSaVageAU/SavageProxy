@@ -6,9 +6,34 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 
 	mcnet "github.com/Tnze/go-mc/net"
 	"github.com/Tnze/go-mc/net/packet"
+)
+
+// ============================================================
+// 26.1.1 PACKET ID CONSTANTS
+// ============================================================
+// These must match the actual protocol version in use.
+// Adjust if connecting to a different MC version.
+//
+// Known verified IDs (confirmed by user testing):
+//   Serverbound 0x07 = chat_command (works for /savage)
+//   Clientbound 0x79 = system_chat  (works for SendMessage)
+//
+// Derived IDs (MUST BE VERIFIED — may need adjustment):
+//   If new packets were added relative to 1.21.11 in the
+//   clientbound direction, all IDs after the insertion point shift.
+const (
+	// Serverbound Play
+	SB_CHAT_COMMAND    int32 = 0x07 // Unsigned chat command
+	SB_TAB_COMPLETE    int32 = 0x0E // Tab complete / command suggestions request
+
+	// Clientbound Play
+	CB_TAB_COMPLETE        int32 = 0x0F // Tab complete / command suggestions response
+	CB_DECLARE_COMMANDS    int32 = 0x10 // Brigadier command graph
+	CB_SYSTEM_CHAT         int32 = 0x79 // System chat message
 )
 
 func (s *Session) ConnectToBackend(address string) error {
@@ -128,8 +153,7 @@ func (s *Session) ConnectToBackend(address string) error {
 					return fmt.Errorf("failed to send forwarding response: %v", err)
 				}
 			} else {
-				// Relay unknown plugin request to client?
-				// Better to just relay it and let the client answer
+				// Relay unknown plugin request to client
 				if err := s.Conn.WritePacket(p); err != nil {
 					return err
 				}
@@ -157,17 +181,38 @@ func (s *Session) Bridge() {
 				return
 			}
 
-			// 26.1.1 Strict Command Interceptor (ID: 0x07 is Unsigned Chat Command)
-			if p.ID == 0x07 {
+			// ==================================================
+			// SERVERBOUND PACKET INTERCEPTION
+			// ==================================================
+
+			// Intercept chat commands (both unsigned 0x07 patterns)
+			if p.ID == SB_CHAT_COMMAND {
 				var cmd packet.String
 				if err := p.Scan(&cmd); err == nil {
-					commandName := string(cmd)
+					commandText := string(cmd)
 					
-					if commandName == "savage" {
-						log.Printf("[ProxyCommand] Triggered /savage dynamically over %s", s.Conn.Socket.RemoteAddr())
-						s.SendMessage("§b§l[SavageProxy] §fNative 26.1.1 Engine §aActive")
-						s.SendMessage("§7Proxy Command executed beautifully!")
-						continue // Safe to swallow! Unsigned commands (0x07) do NOT affect the chat signature chain!
+					if IsProxyCommand(commandText) {
+						log.Printf("[ProxyCommand] Intercepted /%s from %s", commandText, s.Conn.Socket.RemoteAddr())
+						s.HandleProxyCommand(commandText)
+						continue // Swallow — don't forward to backend
+					}
+				}
+			}
+
+			// Track and potentially intercept tab-complete requests
+			if p.ID == SB_TAB_COMPLETE {
+				var id packet.VarInt
+				var text packet.String
+				if err := p.Scan(&id, &text); err == nil {
+					s.LastTabRequestID = int(id)
+					s.LastTabRequestText = string(text)
+
+					// If the user is typing a proxy command, respond immediately
+					resp := HandleProxyTabCompletion(int(id), string(text), CB_TAB_COMPLETE)
+					if resp != nil {
+						log.Printf("[ProxyTab] Responding to tab request for '%s' from proxy", text)
+						s.WriteClient(*resp)
+						continue // Don't forward to backend
 					}
 				}
 			}
@@ -178,8 +223,9 @@ func (s *Session) Bridge() {
 		}
 	}()
 
-	// 2. Backend to Client (Relay)
+	// 2. Backend to Client (Relay with interception)
 	defer s.Close()
+	declareCmdInjectAttempted := false // Track if we've tried injecting commands
 	for {
 		var p packet.Packet
 		if err := s.BackendConn.ReadPacket(&p); err != nil {
@@ -189,16 +235,100 @@ func (s *Session) Bridge() {
 			return
 		}
 
-		// Log IDs to find the real System Chat ID
-		// Most chat packets are IDs between 0x60 and 0x80 in modern 1.21
-		if p.ID >= 0x60 && p.ID <= 0x80 {
-			// Uncomment for deep debugging:
-			// log.Printf("[%s] Potential Chat Packet ID: 0x%02X, Length: %d", s.Conn.Socket.RemoteAddr(), p.ID, len(p.Data))
+		// ==================================================
+		// CLIENTBOUND PACKET INTERCEPTION (steady-state)
+		// ==================================================
+
+		// Inject proxy commands into Brigadier graph (runs once per session)
+		if !declareCmdInjectAttempted && p.ID == CB_DECLARE_COMMANDS {
+			log.Printf("[%s] Intercepted declare_commands (0x%02X). Injecting proxy commands...", s.Conn.Socket.RemoteAddr(), p.ID)
+			declareCmdInjectAttempted = true
+			if err := InjectProxyCommands(&p); err != nil {
+				log.Printf("[%s] Brigadier injection FAILED: %v", s.Conn.Socket.RemoteAddr(), err)
+			}
+		}
+
+		// ==================================================
+		// CLIENTBOUND PACKET INTERCEPTION (steady-state)
+		// ==================================================
+
+		// Intercept tab_complete response — merge proxy suggestions
+		if p.ID == CB_TAB_COMPLETE {
+			reqText := s.LastTabRequestText
+			if len(reqText) > 0 {
+				MergeProxySuggestions(&p, reqText)
+			}
 		}
 
 		// Clientbound packets are safely relayed.
 		if err := s.WriteClient(p); err != nil {
 			return
 		}
+	}
+}
+
+// probeDeclareCommands checks if a packet looks like a declare_commands packet
+// by examining its structure without fully parsing it.
+func probeDeclareCommands(data []byte) bool {
+	if len(data) < 10 {
+		return false
+	}
+
+	r := bytes.NewReader(data)
+
+	// Read the first VarInt — should be a reasonable node count
+	var count packet.VarInt
+	if _, err := count.ReadFrom(r); err != nil {
+		return false
+	}
+
+	// Sanity check: a real Brigadier graph has 50-10000 nodes
+	if count < 30 || count > 10000 {
+		return false
+	}
+
+	// Read the first node's flags byte
+	flags, err := r.ReadByte()
+	if err != nil {
+		return false
+	}
+
+	nodeType := flags & 0x03
+
+	// The first node should typically be the root (type 0) OR
+	// the root could be at any index, but most servers put it first.
+	// However, root type = 0 is the most reliable indicator when combined
+	// with a large node count.
+	// Root nodes have many children and no name.
+	if nodeType == 0 {
+		// Extra validation: root should have a decent number of children
+		var childCount packet.VarInt
+		if _, err := childCount.ReadFrom(r); err != nil {
+			return false
+		}
+		// Root typically has 20+ children (commands like /tp, /give, etc.)
+		return childCount >= 5
+	}
+
+	// If the first node isn't root, it could still be declare_commands
+	// (root is at the end). Check if the overall structure is reasonable.
+	// The data size should be proportional to the node count.
+	bytesPerNode := float64(len(data)) / float64(count)
+	return bytesPerNode >= 3 && bytesPerNode <= 200
+}
+
+// HandleProxyCommand executes a proxy-owned command.
+func (s *Session) HandleProxyCommand(commandText string) {
+	parts := strings.Fields(commandText)
+	if len(parts) == 0 {
+		return
+	}
+
+	switch parts[0] {
+	case "savage":
+		s.SendMessage("§b§l[SavageProxy] §fNative 26.1.1 Engine §aActive")
+		s.SendMessage("§7Proxy Command executed beautifully!")
+	default:
+		s.SendMessage("§c§l[SavageProxy] §fUnknown proxy command: /" + parts[0])
 	}
 }
