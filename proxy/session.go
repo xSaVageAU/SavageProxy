@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/rsa"
 	"time"
 
@@ -50,4 +51,24 @@ func (s *Session) Close() error {
 		s.BackendConn.Close()
 	}
 	return s.Conn.Close()
+}
+
+// SendMessage sends a system chat message to the player using native packet construction.
+// This bypasses the backend server entirely.
+func (s *Session) SendMessage(message string) {
+	buf := new(bytes.Buffer)
+	
+	// System Chat Message (26.1+)
+	// Content: String (JSON)
+	// Overlay: Boolean (false = chat box, true = action bar)
+	
+	jsonMsg := `{"text":"` + message + `"}`
+	WriteString(buf, jsonMsg)
+	buf.WriteByte(0) // false
+	
+	// Packet ID 0x77 (System Chat Message - Clientbound in 26.1+)
+	packetData := EncodePacket(0x77, buf.Bytes())
+	
+	// We use the underlying Socket to write raw bytes
+	s.Conn.Socket.Write(packetData)
 }

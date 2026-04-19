@@ -145,7 +145,7 @@ func (s *Session) ConnectToBackend(address string) error {
 }
 
 func (s *Session) Bridge() {
-	// Bidirectional pipe
+	// 1. Client to Backend (Packet Interception)
 	go func() {
 		defer s.Close()
 		for {
@@ -156,12 +156,27 @@ func (s *Session) Bridge() {
 				}
 				return
 			}
+
+			// Intercept Chat Command (0x06: Chat Command, 0x07: Signed Chat Command in 26.1+)
+			if p.ID == 0x06 || p.ID == 0x07 {
+				var cmd packet.String
+				if err := p.Scan(&cmd); err == nil {
+					commandName := string(cmd)
+					if commandName == "savage" {
+						s.SendMessage("§b§l[SavageProxy] §fNative Protocol Engine §aActive")
+						s.SendMessage("§7This message was intercepted locally - ownership achieved.")
+						continue 
+					}
+				}
+			}
+
 			if err := s.BackendConn.WritePacket(p); err != nil {
 				return
 			}
 		}
 	}()
 
+	// 2. Backend to Client (Relay)
 	defer s.Close()
 	for {
 		var p packet.Packet
